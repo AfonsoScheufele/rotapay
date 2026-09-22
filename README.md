@@ -1,54 +1,48 @@
 # RotaPay
 
-TMS lite para o mercado brasileiro: frete com papéis (admin / embarcador / motorista), mapa OpenStreetMap e cobrança **Pix** (sandbox Mercado Pago ou demo local) ao concluir a entrega.
+Projeto que eu montei pra treinar um TMS simples no contexto BR: frete com papéis (admin, embarcador, motorista), mapa no OpenStreetMap e Pix só depois que a carga foi entregue.
 
-## Problema de negócio
-
-Embarcadores precisam acompanhar fretes de ponta a ponta e só liberar pagamento quando a carga foi entregue. Motoristas precisam ver fretes disponíveis, aceitar e atualizar status. A plataforma registra a cobrança Pix do embarcador e o **repasse líquido** ao motorista no banco, sem fingir TED/payout CPF no sandbox.
+A ideia é bem direta. Embarcador cria o frete, motorista aceita e atualiza o status, e o pagamento só entra quando chega em **entregue**. Eu não finjo TED pra CPF no sandbox: o sistema gera o Pix, confirma no webhook e grava o repasse líquido do motorista no banco.
 
 ## Stack
 
-| Camada | Tecnologia |
-|--------|------------|
-| Front | React, TypeScript, Vite, Leaflet |
-| API | Python, FastAPI, SQLAlchemy, Alembic |
-| Dados | PostgreSQL 16, Redis 7 |
-| Auth | JWT em cookie **httpOnly** (nunca localStorage) |
-| Pagamentos | Mercado Pago Pix (sandbox) ou modo demo |
+- Front: React, TypeScript, Vite, Leaflet
+- API: Python, FastAPI, SQLAlchemy, Alembic
+- Banco: PostgreSQL 16 + Redis 7
+- Auth: JWT em cookie httpOnly (nada de localStorage)
+- Pix: Mercado Pago sandbox, ou modo demo se não tiver token
 
-Valores em **centavos (int)**; UI em `R$ 1.234,56`; datas `DD/MM/AAAA`; fuso `America/Sao_Paulo`. Soft delete com `created_at`, `updated_at`, `deleted_at`.
+Valores em centavos (`int`), tela em `R$ 1.234,56`, datas `DD/MM/AAAA`, fuso `America/Sao_Paulo`. Soft delete com `created_at`, `updated_at`, `deleted_at`.
 
-Fluxo de status (backend):
+Status:
 
-`cotado → aceito → em_transito → entregue → pago` (+ `cancelado` com regras)
+`cotado → aceito → em_transito → entregue → pago` (e `cancelado` com regra)
 
-**SLA:** no aceite do motorista, o prazo é estimado pela distância Haversine (origem/destino), com média 45 km/h, buffer 1,5x, mínimo 72h e máximo 14 dias.
+No aceite do motorista eu calculo o SLA pela distância (Haversine), com média 45 km/h, buffer 1,5x, mínimo 72h e máximo 14 dias.
 
-## Honestidade no Pix
+## Pix (o que eu fiz de propósito)
 
-1. Embarcador gera cobrança Pix só com frete **entregue**.
-2. Webhook confirma (idempotente por `event_key` único + rate limit).
-3. Sistema grava `driver_payout_recorded_cents` (repasse líquido).
-4. Não há TED/payout automático para CPF no sandbox.
+- Só gera Pix com frete **entregue**
+- Webhook é idempotente (`event_key` único) e tem rate limit
+- Guardo `driver_payout_recorded_cents` como repasse líquido
+- Sem `MP_ACCESS_TOKEN`, roda em demo e tem botão pra simular o webhook no detalhe do frete
 
-Sem `MP_ACCESS_TOKEN`, a API gera Pix **demo** e o botão "Simular webhook" no detalhe aprova o pagamento localmente.
+## Como eu testo o fluxo
 
-## Como testar o fluxo (5 passos)
+1. Entro como `embarcador@rotapay.com` / `senha123` e crio um frete com CEP BR
+2. Saio e entro como `motorista@rotapay.com` / `senha123`
+3. Aceito → inicio trânsito → marco entregue
+4. Volto no embarcador, gero o Pix e copio o código / QR
+5. Simulo o webhook (demo) e vejo o frete ir pra **pago** e o dashboard atualizar
 
-1. Login `embarcador@rotapay.com` / `senha123` e crie um frete (CEPs BR).
-2. Logout; login `motorista@rotapay.com` / `senha123`.
-3. Aceite o frete → Iniciar trânsito → Marcar entregue (SLA nasce no aceite).
-4. Volte como embarcador → **Gerar Pix** → QR / copia-e-cola.
-5. Simular webhook (demo) ou pagamento sandbox → status **pago** → Dashboard atualiza.
+Tem seed também com `admin@rotapay.com`. Senha de todos: `senha123`. Nas listagens o documento vem mascarado.
 
-Usuários seed: `admin@rotapay.com`, `embarcador@rotapay.com`, `motorista@rotapay.com` (senha `senha123`). Documentos mascarados nas listagens.
-
-## Como rodar (local)
+## Subir local
 
 ```bash
 cp .env.example .env
 docker compose up -d
-# Postgres :5434 · Redis :6381
+# Postgres na 5434, Redis na 6381
 
 cd backend
 python -m venv .venv && source .venv/bin/activate
@@ -61,9 +55,9 @@ cd ../frontend
 npm install && npm run dev
 ```
 
-- App: http://localhost:5173  
-- Health: http://localhost:8000/api/health  
-- OpenAPI: http://localhost:8000/docs  
+- App: http://localhost:5173
+- Health: http://localhost:8000/api/health
+- Docs da API: http://localhost:8000/docs
 
 ## Testes
 
@@ -71,12 +65,10 @@ npm install && npm run dev
 cd backend && source .venv/bin/activate && pytest -q
 ```
 
-Cobre transição ilegal de status, idempotência do webhook e SLA por distância.
+Hoje cobrem transição ilegal de status, idempotência do webhook e o cálculo do SLA por distância.
 
 ## Prints
 
-Ver [`docs/prints/`](docs/prints/): login, fretes, detalhe (km + SLA), dashboard, Pix.
+Deixei uns prints em [`docs/prints/`](docs/prints/) (login, lista, detalhe, dashboard e Pix).
 
-## Licença
-
-Uso demonstrativo.
+Uso só pra estudo / demonstração.
