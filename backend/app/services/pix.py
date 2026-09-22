@@ -1,9 +1,9 @@
-
 import hashlib
 import hmac
 import json
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
 import httpx
 from fastapi import HTTPException
@@ -12,18 +12,27 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.models.enums import FreightStatus, PaymentStatus, UserRole
+from app.core.logging import get_logger
+from app.models.enums import FreightStatus, PaymentStatus, UserRole, WebhookEventStatus
 from app.models.freight import Freight
 from app.models.payment import Payment
 from app.models.user import User
 from app.models.webhook_event import WebhookEvent
+from app.queue import get_webhook_queue, webhook_retry
 from app.services.freight import get_freight_or_404
 from app.services.status_machine import IllegalTransitionError, assert_transition
 
 MP_API = "https://api.mercadopago.com"
+logger = get_logger("rotapay.pix")
+
 
 class RateLimitExceeded(Exception):
     pass
+
+
+class WebhookApplyError(Exception):
+    pass
+
 
 def _redis() -> Redis | None:
     try:
@@ -32,6 +41,7 @@ def _redis() -> Redis | None:
         return client
     except Exception:
         return None
+
 
 def check_webhook_rate_limit(ip: str, limit: int = 60, window: int = 60) -> None:
     client = _redis()
@@ -43,6 +53,7 @@ def check_webhook_rate_limit(ip: str, limit: int = 60, window: int = 60) -> None
         client.expire(key, window)
     if count > limit:
         raise RateLimitExceeded("Rate limit excedido")
+
 
 def create_pix_charge(db: Session, user: User, freight_id: uuid.UUID) -> Payment:
     settings = get_settings()
@@ -135,6 +146,7 @@ def create_pix_charge(db: Session, user: User, freight_id: uuid.UUID) -> Payment
     db.refresh(payment)
     return payment
 
+
 def verify_mp_signature(
     *,
     x_signature: str | None,
@@ -163,6 +175,7 @@ def verify_mp_signature(
     ).hexdigest()
     return hmac.compare_digest(expected, v1)
 
+
 def fetch_mp_payment(mp_payment_id: str) -> dict:
     settings = get_settings()
     if not settings.mp_access_token:
@@ -178,14 +191,32 @@ def fetch_mp_payment(mp_payment_id: str) -> dict:
         resp.raise_for_status()
         return resp.json()
 
-def process_webhook(
+
+def enqueue_webhook_event(event_id: uuid.UUID) -> None:
+    from rq.job import Callback
+
+    from app.queue.jobs import on_webhook_job_failure, process_webhook_job
+
+    queue = get_webhook_queue()
+    queue.enqueue(
+        process_webhook_job,
+        str(event_id),
+        job_id=f"webhook-{event_id}",
+        retry=webhook_retry(),
+        on_failure=Callback(on_webhook_job_failure),
+        result_ttl=3600,
+        failure_ttl=86400,
+    )
+
+
+def accept_webhook(
     db: Session,
     *,
     payload: dict,
     ip: str,
     x_signature: str | None = None,
     x_request_id: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
     try:
         check_webhook_rate_limit(ip)
     except RateLimitExceeded as exc:
@@ -214,13 +245,64 @@ def process_webhook(
         event_key=event_key,
         mp_payment_id=mp_payment_id,
         payload_hash=payload_hash,
+        status=WebhookEventStatus.recebido,
+        attempts=0,
+        raw_payload=payload,
     )
     db.add(event)
     try:
         db.flush()
     except IntegrityError:
         db.rollback()
+        logger.info(
+            "webhook_accept_duplicate",
+            extra={
+                "event_key": event_key,
+                "mp_payment_id": mp_payment_id,
+                "result": "duplicate",
+            },
+        )
         return {"ok": True, "duplicate": True}
+
+    db.commit()
+    db.refresh(event)
+
+    try:
+        enqueue_webhook_event(event.id)
+    except Exception as exc:
+        logger.info(
+            "webhook_enqueue_failed",
+            extra={
+                "event_id": str(event.id),
+                "event_key": event_key,
+                "result": "enqueue_failed",
+            },
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Fila indisponível; evento persistido como recebido",
+        ) from exc
+
+    logger.info(
+        "webhook_accepted",
+        extra={
+            "event_id": str(event.id),
+            "event_key": event_key,
+            "mp_payment_id": mp_payment_id,
+            "result": "accepted",
+        },
+    )
+    return {
+        "ok": True,
+        "accepted": True,
+        "event_id": str(event.id),
+        "duplicate": False,
+    }
+
+
+def apply_webhook_event(db: Session, event: WebhookEvent) -> dict[str, Any]:
+    payload = event.raw_payload or {}
+    mp_payment_id = event.mp_payment_id
 
     payment = (
         db.query(Payment)
@@ -234,7 +316,7 @@ def process_webhook(
     if not payment:
         ext = mp_data.get("external_reference")
         if ext:
-            freight = db.query(Freight).filter(Freight.id == uuid.UUID(ext)).first()
+            freight = db.query(Freight).filter(Freight.id == uuid.UUID(str(ext))).first()
             if freight:
                 payment = (
                     db.query(Payment)
@@ -249,8 +331,11 @@ def process_webhook(
                     payment.mp_payment_id = mp_payment_id
 
     if not payment:
-        db.commit()
-        return {"ok": True, "skipped": "payment not found"}
+        return {
+            "ok": True,
+            "skipped": "payment not found",
+            "event_key": event.event_key,
+        }
 
     freight = payment.freight or get_freight_or_404(db, payment.freight_id)
 
@@ -261,8 +346,10 @@ def process_webhook(
         try:
             assert_transition(freight.status, FreightStatus.pago)
             freight.status = FreightStatus.pago
-        except IllegalTransitionError:
-            pass
+        except IllegalTransitionError as exc:
+            raise WebhookApplyError(
+                f"Transição ilegal para pago: {freight.status.value}"
+            ) from exc
     elif mp_status in ("rejected", "cancelled"):
         payment.status = (
             PaymentStatus.rejected
@@ -270,10 +357,29 @@ def process_webhook(
             else PaymentStatus.cancelled
         )
 
-    db.commit()
+    db.flush()
     return {
         "ok": True,
         "payment_id": str(payment.id),
+        "freight_id": str(freight.id),
         "freight_status": freight.status.value,
+        "event_key": event.event_key,
         "duplicate": False,
     }
+
+
+def process_webhook(
+    db: Session,
+    *,
+    payload: dict,
+    ip: str,
+    x_signature: str | None = None,
+    x_request_id: str | None = None,
+) -> dict:
+    return accept_webhook(
+        db,
+        payload=payload,
+        ip=ip,
+        x_signature=x_signature,
+        x_request_id=x_request_id,
+    )

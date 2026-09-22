@@ -19,3 +19,10 @@ class PaymentStatus(str, enum.Enum):
     approved = "approved"
     rejected = "rejected"
     cancelled = "cancelled"
+
+
+class WebhookEventStatus(str, enum.Enum):
+    recebido = "recebido"
+    processando = "processando"
+    processado = "processado"
+    falhou = "falhou"

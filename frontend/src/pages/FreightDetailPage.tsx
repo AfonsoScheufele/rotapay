@@ -234,7 +234,12 @@ export function FreightDetailPage() {
                       data: { id: payment.mp_payment_id },
                     }),
                   })
-                  await load()
+                  for (let i = 0; i < 8; i++) {
+                    await new Promise((r) => setTimeout(r, 400))
+                    await load()
+                    const refreshed = await api<Freight>(`/api/freights/${id}`)
+                    if (refreshed.status === 'pago') break
+                  }
                 } catch (err) {
                   setError(err instanceof ApiError ? err.message : 'Webhook falhou')
                 } finally {

@@ -1,0 +1,3 @@
+QUEUE_NAME = "rotapay-webhooks"
+WEBHOOK_MAX_RETRIES = 5
+WEBHOOK_RETRY_INTERVALS = [2, 4, 8, 16, 32]

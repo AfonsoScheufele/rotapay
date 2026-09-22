@@ -1,12 +1,13 @@
-
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from app.models.enums import FreightStatus, PaymentStatus
-from app.services.pix import process_webhook
+from app.models.enums import FreightStatus, PaymentStatus, WebhookEventStatus
+from app.models.webhook_event import WebhookEvent
+from app.services.pix import accept_webhook, apply_webhook_event
+
 
 @pytest.fixture
 def freight_and_payment():
@@ -25,24 +26,19 @@ def freight_and_payment():
     payment.deleted_at = None
     return freight, payment
 
-def test_webhook_duplicado_retorna_duplicate(freight_and_payment) -> None:
-    freight, payment = freight_and_payment
+
+def test_accept_webhook_duplicado_retorna_duplicate() -> None:
     db = MagicMock()
 
-    call_count = {"n": 0}
-
     def flush_side_effect() -> None:
-        call_count["n"] += 1
-        if call_count["n"] >= 1:
-            raise IntegrityError("stmt", "params", Exception("unique"))
+        raise IntegrityError("stmt", "params", Exception("unique"))
 
     db.flush.side_effect = flush_side_effect
-    db.query.return_value.filter.return_value.first.return_value = payment
 
     with patch("app.services.pix.check_webhook_rate_limit"), patch(
         "app.services.pix.verify_mp_signature", return_value=True
     ):
-        result = process_webhook(
+        result = accept_webhook(
             db,
             payload={
                 "type": "payment",
@@ -56,31 +52,31 @@ def test_webhook_duplicado_retorna_duplicate(freight_and_payment) -> None:
     assert result.get("duplicate") is True
     db.rollback.assert_called()
 
-def test_webhook_aprova_e_marca_pago(freight_and_payment) -> None:
+
+def test_apply_webhook_aprova_e_marca_pago(freight_and_payment) -> None:
     freight, payment = freight_and_payment
     db = MagicMock()
-    db.flush.return_value = None
     db.query.return_value.filter.return_value.first.return_value = payment
 
-    with patch("app.services.pix.check_webhook_rate_limit"), patch(
-        "app.services.pix.verify_mp_signature", return_value=True
-    ), patch(
+    event = WebhookEvent(
+        event_key="payment:123456789:payment.updated",
+        mp_payment_id="123456789",
+        payload_hash="abc",
+        status=WebhookEventStatus.processando,
+        raw_payload={
+            "type": "payment",
+            "action": "payment.updated",
+            "data": {"id": "123456789"},
+        },
+    )
+
+    with patch(
         "app.services.pix.fetch_mp_payment",
         return_value={"id": "123456789", "status": "approved"},
     ):
-        result = process_webhook(
-            db,
-            payload={
-                "type": "payment",
-                "action": "payment.updated",
-                "data": {"id": "123456789"},
-            },
-            ip="127.0.0.1",
-        )
+        result = apply_webhook_event(db, event)
 
     assert result["ok"] is True
-    assert result.get("duplicate") is False
     assert payment.status == PaymentStatus.approved
     assert freight.status == FreightStatus.pago
     assert payment.driver_payout_recorded_cents == 95_000
-    db.commit.assert_called()

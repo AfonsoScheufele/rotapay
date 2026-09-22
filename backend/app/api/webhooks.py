@@ -1,4 +1,3 @@
-
 from typing import Any
 
 from fastapi import APIRouter, Header, Request
@@ -7,6 +6,7 @@ from app.core.deps import DbSession
 from app.services import pix as pix_svc
 
 router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
+
 
 @router.post("/mercadopago")
 async def mercadopago_webhook(
@@ -29,7 +29,7 @@ async def mercadopago_webhook(
         }
 
     client_ip = request.client.host if request.client else "unknown"
-    return pix_svc.process_webhook(
+    return pix_svc.accept_webhook(
         db,
         payload=payload,
         ip=client_ip,

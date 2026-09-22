@@ -29,6 +29,8 @@ services:
       timeout: 3s
       retries: 5
 
+# API e worker RQ rodam no host (ver README). Redis acima alimenta a fila rotapay-webhooks.
+
 volumes:
   pgdata:
   redisdata:
