@@ -34,6 +34,16 @@ class Settings(BaseSettings):
     environment: str = "development"
     timezone: str = "America/Sao_Paulo"
 
+def _normalize_database_url(url: str) -> str:
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://") :]
+    if url.startswith("postgresql://") and "+psycopg" not in url:
+        url = "postgresql+psycopg://" + url[len("postgresql://") :]
+    return url
+
+
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    settings.database_url = _normalize_database_url(settings.database_url)
+    return settings
