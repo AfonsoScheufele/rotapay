@@ -2,10 +2,6 @@
 
 TMS lite para o mercado brasileiro: frete com papéis (admin / embarcador / motorista), mapa OpenStreetMap e cobrança **Pix** (sandbox Mercado Pago ou demo local) ao concluir a entrega.
 
-**Deploy:** _(cole a URL do front após publicar)_  
-**Vídeo (2 a 3 min):** _(cole o link do Loom/YouTube)_  
-**API / Swagger:** _(cole a URL)/docs_
-
 ## Problema de negócio
 
 Embarcadores precisam acompanhar fretes de ponta a ponta e só liberar pagamento quando a carga foi entregue. Motoristas precisam ver fretes disponíveis, aceitar e atualizar status. A plataforma registra a cobrança Pix do embarcador e o **repasse líquido** ao motorista no banco, sem fingir TED/payout CPF no sandbox.
@@ -77,41 +73,10 @@ cd backend && source .venv/bin/activate && pytest -q
 
 Cobre transição ilegal de status, idempotência do webhook e SLA por distância.
 
-## Deploy (Vercel + Railway)
-
-### Front (Vercel)
-
-1. Root Directory: `frontend`
-2. Build: `npm run build` · Output: `dist`
-3. Env: `VITE_API_URL=https://SUA-API.up.railway.app`
-
-Ver [`frontend/vercel.json`](frontend/vercel.json).
-
-### API (Railway)
-
-1. Deploy a partir de `backend/` com o [`Dockerfile`](backend/Dockerfile)
-2. Adicione Postgres e Redis (ou Upstash)
-3. Variáveis mínimas:
-
-```
-DATABASE_URL=...
-REDIS_URL=...
-JWT_SECRET=...
-FRONTEND_ORIGIN=https://seu-app.vercel.app
-COOKIE_SECURE=true
-COOKIE_SAMESITE=none
-API_PUBLIC_URL=https://SUA-API.up.railway.app
-ENVIRONMENT=production
-```
-
-4. (Opcional) `MP_ACCESS_TOKEN` + webhook `https://SUA-API/api/webhooks/mercadopago`
-
-Checklist pós-deploy: login seed, criar frete, fluxo até pago, cookie cross-site ok.
-
 ## Prints
 
 Ver [`docs/prints/`](docs/prints/): login, fretes, detalhe (km + SLA), dashboard, Pix.
 
 ## Licença
 
-Projeto de portfólio. Uso demonstrativo.
+Uso demonstrativo.
